@@ -1,0 +1,101 @@
+hardhat/contracts' running
+INFO:Detectors:
+CPROVesting.emergencyWithdraw(address,uint256) (../contracts/CPROVesting.sol#255-264) ignores return value by IERC20(_token).transfer(owner(),amount) (../contracts/CPROVesting.sol#263)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unchecked-transfer
+INFO:Detectors:
+Reentrancy in CPROVesting.createVestingSchedule(address,uint256,uint256,uint256,uint256) (../contracts/CPROVesting.sol#52-102):
+        External calls:
+        - require(bool,string)(token.transferFrom(msg.sender,address(this),totalAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#78-81)
+        State variables written after the call(s):
+        - vestingSchedules[beneficiary] = VestingSchedule({totalAmount:totalAmount,claimedAmount:0,startTime:startTime,cliffDuration:cliffDuration,vestingDuration:vestingDuration,revoked:false,exists:true}) (../contracts/CPROVesting.sol#83-91)
+        CPROVesting.vestingSchedules (../contracts/CPROVesting.sol#22) can be used in cross function reentrancies:
+        - CPROVesting.createVestingSchedule(address,uint256,uint256,uint256,uint256) (../contracts/CPROVesting.sol#52-102)
+        - CPROVesting.getBeneficiaryVestingSchedule(address) (../contracts/CPROVesting.sol#208-231)
+        - CPROVesting.getClaimableAmount(address) (../contracts/CPROVesting.sol#109-119)
+        - CPROVesting.getVestedAmount(address) (../contracts/CPROVesting.sol#126-136)
+        - CPROVesting.revokeVesting(address) (../contracts/CPROVesting.sol#183-203)
+        - CPROVesting.vestingSchedules (../contracts/CPROVesting.sol#22)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-1
+INFO:Detectors:
+Reentrancy in CPROVesting.createVestingSchedule(address,uint256,uint256,uint256,uint256) (../contracts/CPROVesting.sol#52-102):
+        External calls:
+        - require(bool,string)(token.transferFrom(msg.sender,address(this),totalAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#78-81)
+        State variables written after the call(s):
+        - beneficiaries.push(beneficiary) (../contracts/CPROVesting.sol#93)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
+INFO:Detectors:
+Reentrancy in CPROVesting.createVestingSchedule(address,uint256,uint256,uint256,uint256) (../contracts/CPROVesting.sol#52-102):
+        External calls:
+        - require(bool,string)(token.transferFrom(msg.sender,address(this),totalAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#78-81)
+        Event emitted after the call(s):
+        - VestingScheduleCreated(beneficiary,totalAmount,startTime,cliffDuration,vestingDuration) (../contracts/CPROVesting.sol#95-101)
+Reentrancy in CPROVesting.revokeVesting(address) (../contracts/CPROVesting.sol#183-203):
+        External calls:
+        - require(bool,string)(token.transfer(owner(),unvestedAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#196-199)
+        Event emitted after the call(s):
+        - VestingRevoked(beneficiary,unvestedAmount) (../contracts/CPROVesting.sol#202)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
+INFO:Detectors:
+CPROVesting._calculateVestedAmount(CPROVesting.VestingSchedule) (../contracts/CPROVesting.sol#141-158) uses timestamp for comparisons
+        Dangerous comparisons:
+        - block.timestamp < schedule.startTime + schedule.cliffDuration (../contracts/CPROVesting.sol#144)
+        - block.timestamp >= schedule.startTime + schedule.vestingDuration (../contracts/CPROVesting.sol#149)
+CPROVesting.claimTokens() (../contracts/CPROVesting.sol#163-177) uses timestamp for comparisons
+        Dangerous comparisons:
+        - require(bool,string)(claimableAmount > 0,CPROVesting: no tokens to claim) (../contracts/CPROVesting.sol#167)
+        - require(bool,string)(token.transfer(beneficiary,claimableAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#171-174)
+CPROVesting.revokeVesting(address) (../contracts/CPROVesting.sol#183-203) uses timestamp for comparisons
+        Dangerous comparisons:
+        - unvestedAmount > 0 (../contracts/CPROVesting.sol#195)
+        - require(bool,string)(token.transfer(owner(),unvestedAmount),CPROVesting: transfer failed) (../contracts/CPROVesting.sol#196-199)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+INFO:Detectors:
+3 different versions of Solidity are used:
+        - Version constraint ^0.8.28 is used by:
+                -^0.8.28 (../contracts/CPROVesting.sol#2)
+        - Version constraint ^0.8.20 is used by:
+                -^0.8.20 (@openzeppelin/contracts/access/Ownable.sol#4)
+                -^0.8.20 (@openzeppelin/contracts/utils/Context.sol#4)
+                -^0.8.20 (@openzeppelin/contracts/utils/ReentrancyGuard.sol#4)
+        - Version constraint >=0.4.16 is used by:
+                ->=0.4.16 (@openzeppelin/contracts/token/ERC20/IERC20.sol#4)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#different-pragma-directives-are-used
+INFO:Detectors:
+Context._contextSuffixLength() (@openzeppelin/contracts/utils/Context.sol#25-27) is never used and should be removed
+Context._msgData() (@openzeppelin/contracts/utils/Context.sol#21-23) is never used and should be removed
+ReentrancyGuard._reentrancyGuardEntered() (@openzeppelin/contracts/utils/ReentrancyGuard.sol#84-86) is never used and should be removed
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dead-code
+INFO:Detectors:
+Version constraint ^0.8.20 contains known severe issues (https://solidity.readthedocs.io/en/latest/bugs.html)
+        - VerbatimInvalidDeduplication
+        - FullInlinerNonExpressionSplitArgumentEvaluationOrder
+        - MissingSideEffectsOnSelectorAccess.
+It is used by:
+        - ^0.8.20 (@openzeppelin/contracts/access/Ownable.sol#4)
+        - ^0.8.20 (@openzeppelin/contracts/utils/Context.sol#4)
+        - ^0.8.20 (@openzeppelin/contracts/utils/ReentrancyGuard.sol#4)
+Version constraint >=0.4.16 contains known severe issues (https://solidity.readthedocs.io/en/latest/bugs.html)
+        - DirtyBytesArrayToStorage
+        - ABIDecodeTwoDimensionalArrayMemory
+        - KeccakCaching
+        - EmptyByteArrayCopy
+        - DynamicArrayCleanup
+        - ImplicitConstructorCallvalueCheck
+        - TupleAssignmentMultiStackSlotComponents
+        - MemoryArrayCreationOverflow
+        - privateCanBeOverridden
+        - SignedArrayStorageCopy
+        - ABIEncoderV2StorageArrayWithMultiSlotElement
+        - DynamicConstructorArgumentsClippedABIV2
+        - UninitializedFunctionPointerInConstructor_0.4.x
+        - IncorrectEventSignatureInLibraries_0.4.x
+        - ExpExponentCleanup
+        - NestedArrayFunctionCallDecoder
+        - ZeroFunctionSelector.
+It is used by:
+        - >=0.4.16 (@openzeppelin/contracts/token/ERC20/IERC20.sol#4)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#incorrect-versions-of-solidity
+INFO:Detectors:
+Parameter CPROVesting.emergencyWithdraw(address,uint256)._token (../contracts/CPROVesting.sol#256) is not in mixedCase
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#conformance-to-solidity-naming-conventions
+INFO:Slither:../contracts/CPROVesting.sol analyzed (5 contracts with 100 detectors), 15 result(s) found
