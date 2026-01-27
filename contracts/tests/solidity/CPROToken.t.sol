@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
-import {CPROToken} from "../src/CPROToken.sol";
+import {CPROToken} from "../CPROToken.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -22,6 +22,9 @@ contract CPROTokenTest is Test {
     address public user1;
     address public user2;
     address public nonOwner;
+    address public feeRecipient;
+    address public dexPair;
+    address public stakingContract;
 
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
     uint256 public constant INITIAL_SUPPLY = 1000000 * 10 ** 18;
@@ -32,12 +35,19 @@ contract CPROTokenTest is Test {
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Paused(address account);
     event Unpaused(address account);
+    event TransferFeeUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event TransferFeeToggled(bool enabled);
+    event FeeExemptionUpdated(address indexed account, bool exempt);
 
     function setUp() public {
         owner = address(this);
         user1 = makeAddr("user1");
         user2 = makeAddr("user2");
         nonOwner = makeAddr("nonOwner");
+        feeRecipient = makeAddr("feeRecipient");
+        dexPair = makeAddr("dexPair");
+        stakingContract = makeAddr("stakingContract");
 
         token = new CPROToken();
         mockToken = new MockERC20();
@@ -364,5 +374,687 @@ contract CPROTokenTest is Test {
 
         console.log("Gas used for mint:", gasUsed);
         assertTrue(gasUsed > 0); // Simple assertion to make it a proper test
+    }
+
+    // ============ Transfer Fee Tests ============
+
+    // Configuration Tests
+    function testSetTransferFee() public {
+        uint256 feeBasisPoints = 100; // 1%
+        
+        vm.expectEmit(true, false, false, true);
+        emit TransferFeeUpdated(0, feeBasisPoints);
+        
+        token.setTransferFee(feeBasisPoints);
+        assertEq(token.transferFeeBasisPoints(), feeBasisPoints);
+    }
+
+    function testSetTransferFeeOnlyOwner() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                nonOwner
+            )
+        );
+        token.setTransferFee(100);
+    }
+
+    function testSetTransferFeeTooHigh() public {
+        vm.expectRevert("CPROToken: Fee too high");
+        token.setTransferFee(token.MAX_FEE_BASIS_POINTS() + 1);
+    }
+
+    function testSetTransferFeeMaxAllowed() public {
+        uint256 maxFee = token.MAX_FEE_BASIS_POINTS();
+        token.setTransferFee(maxFee);
+        assertEq(token.transferFeeBasisPoints(), maxFee);
+    }
+
+    function testSetFeeRecipient() public {
+        vm.expectEmit(true, true, false, true);
+        emit FeeRecipientUpdated(address(0), feeRecipient);
+        
+        token.setFeeRecipient(feeRecipient);
+        assertEq(token.feeRecipient(), feeRecipient);
+    }
+
+    function testSetFeeRecipientOnlyOwner() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                nonOwner
+            )
+        );
+        token.setFeeRecipient(feeRecipient);
+    }
+
+    function testSetFeeRecipientZeroAddress() public {
+        vm.expectRevert("CPROToken: Invalid recipient");
+        token.setFeeRecipient(address(0));
+    }
+
+    function testSetFeeRecipientContractAddress() public {
+        vm.expectRevert("CPROToken: Cannot use contract as recipient");
+        token.setFeeRecipient(address(token));
+    }
+
+    function testSetTransferFeeEnabled() public {
+        vm.expectEmit(true, false, false, true);
+        emit TransferFeeToggled(true);
+        
+        token.setTransferFeeEnabled(true);
+        assertTrue(token.transferFeeEnabled());
+        
+        vm.expectEmit(true, false, false, true);
+        emit TransferFeeToggled(false);
+        
+        token.setTransferFeeEnabled(false);
+        assertFalse(token.transferFeeEnabled());
+    }
+
+    function testSetTransferFeeEnabledOnlyOwner() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                nonOwner
+            )
+        );
+        token.setTransferFeeEnabled(true);
+    }
+
+    // Basic Fee Functionality
+    function testTransferWithFee() public {
+        // Setup: Enable 1% fee (100 basis points)
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000; // 1% = 10 tokens
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+        assertEq(
+            token.balanceOf(owner),
+            INITIAL_SUPPLY - transferAmount
+        );
+    }
+
+    function testTransferWithFeeDisabled() public {
+        // Setup fee but keep it disabled
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(false);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), transferAmount);
+        assertEq(token.balanceOf(feeRecipient), 0);
+        assertEq(token.balanceOf(owner), INITIAL_SUPPLY - transferAmount);
+    }
+
+    function testTransferFromWithFee() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.approve(user1, transferAmount);
+        
+        vm.prank(user1);
+        token.transferFrom(owner, user2, transferAmount);
+
+        assertEq(token.balanceOf(user2), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+        assertEq(token.balanceOf(owner), INITIAL_SUPPLY - transferAmount);
+    }
+
+    function testTransferWithMaximumFee() public {
+        uint256 maxFee = token.MAX_FEE_BASIS_POINTS(); // 5%
+        token.setTransferFee(maxFee);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * maxFee) / 10000; // 5% = 50 tokens
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+    }
+
+    function testTransferWithZeroFee() public {
+        token.setTransferFee(0);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), transferAmount);
+        assertEq(token.balanceOf(feeRecipient), 0);
+    }
+
+    // Edge Cases
+    function testTransferWithFeeMinting() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 mintAmount = 1000 * 10 ** 18;
+        uint256 initialFeeRecipientBalance = token.balanceOf(feeRecipient);
+
+        // Minting should not charge fee (from == address(0))
+        token.mint(user1, mintAmount);
+
+        assertEq(token.balanceOf(user1), mintAmount);
+        assertEq(token.balanceOf(feeRecipient), initialFeeRecipientBalance);
+    }
+
+    function testTransferWithFeeBurning() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 burnAmount = 1000 * 10 ** 18;
+        uint256 initialSupply = token.totalSupply();
+        uint256 initialFeeRecipientBalance = token.balanceOf(feeRecipient);
+
+        // Burning should NOT charge fee (to == address(0))
+        // User expects to burn exactly burnAmount
+        token.burn(burnAmount);
+
+        assertEq(token.totalSupply(), initialSupply - burnAmount);
+        assertEq(token.balanceOf(feeRecipient), initialFeeRecipientBalance);
+    }
+
+    function testTransferToZeroAddressNoFee() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 burnAmount = 1000 * 10 ** 18;
+        uint256 initialSupply = token.totalSupply();
+        uint256 initialFeeRecipientBalance = token.balanceOf(feeRecipient);
+
+        // Transfer to address(0) should NOT charge fee (burning)
+        token.transfer(address(0), burnAmount);
+
+        assertEq(token.totalSupply(), initialSupply - burnAmount);
+        assertEq(token.balanceOf(feeRecipient), initialFeeRecipientBalance);
+    }
+
+    function testTransferWithFeeZeroAmount() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 initialFeeRecipientBalance = token.balanceOf(feeRecipient);
+
+        // Zero amount transfer should not charge fee
+        token.transfer(user1, 0);
+
+        assertEq(token.balanceOf(user1), 0);
+        assertEq(token.balanceOf(feeRecipient), initialFeeRecipientBalance);
+    }
+
+    function testTransferWithFeeSelfTransfer() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+        uint256 initialBalance = token.balanceOf(owner);
+
+        // Self-transfer should still charge fee
+        token.transfer(owner, transferAmount);
+
+        assertEq(token.balanceOf(owner), initialBalance - expectedFee);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+    }
+
+    function testTransferWithFeeRecipientAsReceiver() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.transfer(feeRecipient, transferAmount);
+
+        // Fee recipient receives transfer amount minus fee, plus the fee
+        assertEq(token.balanceOf(feeRecipient), expectedTransfer + expectedFee);
+    }
+
+    function testTransferWithFeeRecipientAsSender() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        // Give feeRecipient some tokens
+        token.mint(feeRecipient, 1000 * 10 ** 18);
+
+        uint256 transferAmount = 500 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        vm.prank(feeRecipient);
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), 1000 * 10 ** 18 - transferAmount);
+    }
+
+    function testTransferWithFeeNoRecipientSet() public {
+        token.setTransferFee(100);
+        token.setTransferFeeEnabled(true);
+        // feeRecipient remains address(0)
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+        uint256 initialSupply = token.totalSupply();
+
+        // Fee should be explicitly burned when recipient is address(0)
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.totalSupply(), initialSupply - expectedFee); // Supply decreases by fee amount
+        
+        // Verify ERC20 invariant: totalSupply should equal sum of balances
+        uint256 totalBalances = token.balanceOf(owner) + token.balanceOf(user1);
+        assertEq(token.totalSupply(), totalBalances);
+    }
+
+    function testTransferWithFeeBurnedVotingPower() public {
+        token.setTransferFee(100);
+        token.setTransferFeeEnabled(true);
+        // feeRecipient remains address(0) - fees will be burned
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+
+        uint256 ownerVotesBefore = token.getVotes(owner);
+        uint256 user1VotesBefore = token.getVotes(user1);
+
+        token.transfer(user1, transferAmount);
+
+        // Move blocks to update checkpoints
+        vm.roll(block.number + 1);
+
+        uint256 ownerVotesAfter = token.getVotes(owner);
+        uint256 user1VotesAfter = token.getVotes(user1);
+
+        // Owner's voting power should decrease by full amount (transfer + fee)
+        assertEq(ownerVotesBefore - ownerVotesAfter, transferAmount);
+        
+        // User1's voting power should increase by transfer amount minus fee
+        assertEq(user1VotesAfter - user1VotesBefore, transferAmount - expectedFee);
+        
+        // Fee was burned, so no one's voting power should increase by the fee
+        // Total voting power should decrease by the fee amount (burned)
+    }
+
+    // Voting Power Tests
+    function testVotingPowerWithFee() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        uint256 ownerVotesBefore = token.getVotes(owner);
+        uint256 user1VotesBefore = token.getVotes(user1);
+        uint256 feeRecipientVotesBefore = token.getVotes(feeRecipient);
+
+        token.transfer(user1, transferAmount);
+
+        // Move blocks to update checkpoints
+        vm.roll(block.number + 1);
+
+        uint256 ownerVotesAfter = token.getVotes(owner);
+        uint256 user1VotesAfter = token.getVotes(user1);
+        uint256 feeRecipientVotesAfter = token.getVotes(feeRecipient);
+
+        // Owner's voting power should decrease by full amount (transfer + fee)
+        assertEq(ownerVotesBefore - ownerVotesAfter, transferAmount);
+        
+        // User1's voting power should increase by transfer amount minus fee
+        assertEq(user1VotesAfter - user1VotesBefore, expectedTransfer);
+        
+        // Fee recipient's voting power should increase by fee
+        assertEq(feeRecipientVotesAfter - feeRecipientVotesBefore, expectedFee);
+    }
+
+    function testVotingPowerWithoutFee() public {
+        token.setTransferFeeEnabled(false);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+
+        uint256 ownerVotesBefore = token.getVotes(owner);
+        uint256 user1VotesBefore = token.getVotes(user1);
+
+        token.transfer(user1, transferAmount);
+
+        vm.roll(block.number + 1);
+
+        uint256 ownerVotesAfter = token.getVotes(owner);
+        uint256 user1VotesAfter = token.getVotes(user1);
+
+        assertEq(ownerVotesBefore - ownerVotesAfter, transferAmount);
+        assertEq(user1VotesAfter - user1VotesBefore, transferAmount);
+    }
+
+    // Integration Tests
+    function testTransferFeeWithPause() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        token.pause();
+
+        vm.expectRevert();
+        token.transfer(user1, 1000 * 10 ** 18);
+    }
+
+    function testTransferFeeAfterUnpause() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        token.pause();
+        token.unpause();
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+    }
+
+    function testTransferFeeWithCappedSupply() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        // Fee should not affect cap checking
+        uint256 remainingSupply = token.MAX_SUPPLY() - token.totalSupply();
+        token.mint(user1, remainingSupply);
+
+        assertEq(token.totalSupply(), token.MAX_SUPPLY());
+    }
+
+    // Fuzz Tests
+    function testFuzzTransferWithFee(uint256 amount, uint256 feeBasisPoints) public {
+        feeBasisPoints = bound(feeBasisPoints, 0, token.MAX_FEE_BASIS_POINTS());
+        amount = bound(amount, 1, token.balanceOf(owner) / 2); // Use at most half to avoid edge cases
+
+        token.setTransferFee(feeBasisPoints);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 expectedFee = (amount * feeBasisPoints) / 10000;
+        uint256 expectedTransfer = amount - expectedFee;
+
+        token.transfer(user1, amount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+        assertEq(token.balanceOf(owner), INITIAL_SUPPLY - amount);
+    }
+
+    // Gas Tests
+    function testGasTransferWithFee() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 gasStart = gasleft();
+        token.transfer(user1, 1000 * 10 ** 18);
+        uint256 gasUsed = gasStart - gasleft();
+
+        console.log("Gas used for transfer with fee:", gasUsed);
+        assertTrue(gasUsed > 0);
+    }
+
+    function testGasTransferWithoutFee() public {
+        token.setTransferFeeEnabled(false);
+
+        uint256 gasStart = gasleft();
+        token.transfer(user1, 1000 * 10 ** 18);
+        uint256 gasUsed = gasStart - gasleft();
+
+        console.log("Gas used for transfer without fee:", gasUsed);
+        assertTrue(gasUsed > 0);
+    }
+
+    // ============ Fee Exemption Tests ============
+
+    function testSetFeeExemption() public {
+        vm.expectEmit(true, false, false, true);
+        emit FeeExemptionUpdated(dexPair, true);
+
+        token.setFeeExemption(dexPair, true);
+        assertTrue(token.isFeeExempt(dexPair));
+
+        vm.expectEmit(true, false, false, true);
+        emit FeeExemptionUpdated(dexPair, false);
+
+        token.setFeeExemption(dexPair, false);
+        assertFalse(token.isFeeExempt(dexPair));
+    }
+
+    function testSetFeeExemptionOnlyOwner() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                nonOwner
+            )
+        );
+        token.setFeeExemption(dexPair, true);
+    }
+
+    function testSetFeeExemptionZeroAddress() public {
+        vm.expectRevert("CPROToken: Invalid account");
+        token.setFeeExemption(address(0), true);
+    }
+
+    function testTransferWithExemptSender() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        token.setFeeExemption(owner, true); // Owner is exempt
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 feeRecipientBalanceBefore = token.balanceOf(feeRecipient);
+
+        // Transfer from exempt address should not charge fee
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), transferAmount);
+        assertEq(token.balanceOf(feeRecipient), feeRecipientBalanceBefore);
+    }
+
+    function testTransferWithExemptReceiver() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        token.setFeeExemption(user1, true); // User1 is exempt
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 feeRecipientBalanceBefore = token.balanceOf(feeRecipient);
+
+        // Transfer to exempt address should not charge fee
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), transferAmount);
+        assertEq(token.balanceOf(feeRecipient), feeRecipientBalanceBefore);
+    }
+
+    function testTransferWithBothExempt() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        token.setFeeExemption(owner, true);
+        token.setFeeExemption(user1, true);
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 feeRecipientBalanceBefore = token.balanceOf(feeRecipient);
+
+        // Transfer between exempt addresses should not charge fee
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), transferAmount);
+        assertEq(token.balanceOf(feeRecipient), feeRecipientBalanceBefore);
+    }
+
+    function testTransferWithNonExemptPaysFee() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        // No exemptions set
+
+        uint256 transferAmount = 1000 * 10 ** 18;
+        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        // Transfer between non-exempt addresses should charge fee
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+    }
+
+    function testBatchSetFeeExemptions() public {
+        address[] memory accounts = new address[](3);
+        bool[] memory exempts = new bool[](3);
+        
+        accounts[0] = dexPair;
+        accounts[1] = stakingContract;
+        accounts[2] = user1;
+        
+        exempts[0] = true;
+        exempts[1] = true;
+        exempts[2] = false;
+
+        token.batchSetFeeExemptions(accounts, exempts);
+
+        assertTrue(token.isFeeExempt(dexPair));
+        assertTrue(token.isFeeExempt(stakingContract));
+        assertFalse(token.isFeeExempt(user1));
+    }
+
+    function testBatchSetFeeExemptionsOnlyOwner() public {
+        address[] memory accounts = new address[](1);
+        bool[] memory exempts = new bool[](1);
+        accounts[0] = dexPair;
+        exempts[0] = true;
+
+        vm.prank(nonOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                nonOwner
+            )
+        );
+        token.batchSetFeeExemptions(accounts, exempts);
+    }
+
+    function testBatchSetFeeExemptionsLengthMismatch() public {
+        address[] memory accounts = new address[](2);
+        bool[] memory exempts = new bool[](1);
+        accounts[0] = dexPair;
+        accounts[1] = stakingContract;
+        exempts[0] = true;
+
+        vm.expectRevert("CPROToken: Arrays length mismatch");
+        token.batchSetFeeExemptions(accounts, exempts);
+    }
+
+    function testBatchSetFeeExemptionsEmptyArrays() public {
+        address[] memory accounts = new address[](0);
+        bool[] memory exempts = new bool[](0);
+
+        vm.expectRevert("CPROToken: Empty arrays");
+        token.batchSetFeeExemptions(accounts, exempts);
+    }
+
+    function testBatchSetFeeExemptionsZeroAddress() public {
+        address[] memory accounts = new address[](1);
+        bool[] memory exempts = new bool[](1);
+        accounts[0] = address(0);
+        exempts[0] = true;
+
+        vm.expectRevert("CPROToken: Invalid account");
+        token.batchSetFeeExemptions(accounts, exempts);
+    }
+
+    function testExemptAddressVotingPower() public {
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        token.setFeeExemption(dexPair, true);
+
+        // Give dexPair some tokens
+        token.mint(dexPair, 1000 * 10 ** 18);
+
+        uint256 transferAmount = 500 * 10 ** 18;
+        uint256 dexPairVotesBefore = token.getVotes(dexPair);
+        uint256 user1VotesBefore = token.getVotes(user1);
+
+        vm.prank(dexPair);
+        token.transfer(user1, transferAmount);
+
+        vm.roll(block.number + 1);
+
+        uint256 dexPairVotesAfter = token.getVotes(dexPair);
+        uint256 user1VotesAfter = token.getVotes(user1);
+
+        // No fee, so voting power should change by full amount
+        assertEq(dexPairVotesBefore - dexPairVotesAfter, transferAmount);
+        assertEq(user1VotesAfter - user1VotesBefore, transferAmount);
+    }
+
+    function testDexPairScenario() public {
+        // Simulate DEX pair interaction
+        token.setTransferFee(100);
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+        token.setFeeExemption(dexPair, true);
+
+        // User transfers to DEX pair (no fee)
+        uint256 amount1 = 1000 * 10 ** 18;
+        token.transfer(dexPair, amount1);
+        assertEq(token.balanceOf(dexPair), amount1);
+
+        // DEX pair transfers to user (no fee)
+        vm.prank(dexPair);
+        token.transfer(user1, amount1);
+        assertEq(token.balanceOf(user1), amount1);
+        assertEq(token.balanceOf(feeRecipient), 0);
     }
 }
