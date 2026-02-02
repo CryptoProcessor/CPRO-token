@@ -14,9 +14,21 @@ contract MockERC20 is ERC20 {
     }
 }
 
+// Mock ERC20 that reverts on transfer (e.g. non-standard / USDT-style behavior)
+contract MockERC20RevertsOnTransfer is ERC20 {
+    constructor() ERC20("MockRevert", "MREV") {
+        _mint(msg.sender, 1000000 * 10 ** 18);
+    }
+
+    function transfer(address, uint256) public pure override returns (bool) {
+        revert("Token transfer reverted");
+    }
+}
+
 contract CPROTokenTest is Test {
     CPROToken public token;
     MockERC20 public mockToken;
+    MockERC20RevertsOnTransfer public mockRevertingToken;
 
     address public owner;
     address public user1;
@@ -36,9 +48,13 @@ contract CPROTokenTest is Test {
     event Paused(address account);
     event Unpaused(address account);
     event TransferFeeUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
-    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event FeeRecipientUpdated(
+        address indexed oldRecipient,
+        address indexed newRecipient
+    );
     event TransferFeeToggled(bool enabled);
     event FeeExemptionUpdated(address indexed account, bool exempt);
+    event FeeExemptionSet(address[] accounts, bool[] exempts);
 
     function setUp() public {
         owner = address(this);
@@ -51,6 +67,7 @@ contract CPROTokenTest is Test {
 
         token = new CPROToken();
         mockToken = new MockERC20();
+        mockRevertingToken = new MockERC20RevertsOnTransfer();
     }
 
     // Constructor
@@ -239,6 +256,54 @@ contract CPROTokenTest is Test {
         token.mint(user1, 1000 * 10 ** 18);
     }
 
+    function testBurnFromOwnerWhenPaused() public {
+        token.pause();
+        vm.expectRevert();
+        token.burnFromOwner(100 * 10 ** 18);
+    }
+
+    function testSetTransferFeeWhenPaused() public {
+        token.pause();
+        vm.expectRevert();
+        token.setTransferFee(100);
+    }
+
+    function testSetFeeRecipientWhenPaused() public {
+        token.pause();
+        vm.expectRevert();
+        token.setFeeRecipient(feeRecipient);
+    }
+
+    function testSetTransferFeeEnabledWhenPaused() public {
+        token.pause();
+        vm.expectRevert();
+        token.setTransferFeeEnabled(true);
+    }
+
+    function testSetFeeExemptionWhenPaused() public {
+        token.pause();
+        vm.expectRevert();
+        token.setFeeExemption(dexPair, true);
+    }
+
+    function testBatchSetFeeExemptionsWhenPaused() public {
+        address[] memory accounts = new address[](1);
+        bool[] memory exempts = new bool[](1);
+        accounts[0] = dexPair;
+        exempts[0] = true;
+        token.pause();
+        vm.expectRevert();
+        token.batchSetFeeExemptions(accounts, exempts);
+    }
+
+    function testRecoverERC20WhenPaused() public {
+        uint256 recoveryAmount = 1000 * 10 ** 18;
+        mockToken.transfer(address(token), recoveryAmount);
+        token.pause();
+        vm.expectRevert();
+        token.recoverERC20(address(mockToken), recoveryAmount);
+    }
+
     // Recovery
     function testRecoverERC20() public {
         uint256 recoveryAmount = 1000 * 10 ** 18;
@@ -291,6 +356,15 @@ contract CPROTokenTest is Test {
     function testRecoverERC20ZeroAmount() public {
         vm.expectRevert("CPROToken: Amount must be greater than 0");
         token.recoverERC20(address(mockToken), 0);
+    }
+
+    function testRecoverERC20TokenTransferFailed() public {
+        uint256 recoveryAmount = 1000 * 10 ** 18;
+        mockRevertingToken.transfer(address(token), recoveryAmount);
+        assertEq(mockRevertingToken.balanceOf(address(token)), recoveryAmount);
+
+        vm.expectRevert("CPROToken: Token transfer failed");
+        token.recoverERC20(address(mockRevertingToken), recoveryAmount);
     }
 
     // Transfer Tests
@@ -381,10 +455,10 @@ contract CPROTokenTest is Test {
     // Configuration Tests
     function testSetTransferFee() public {
         uint256 feeBasisPoints = 100; // 1%
-        
+
         vm.expectEmit(true, false, false, true);
         emit TransferFeeUpdated(0, feeBasisPoints);
-        
+
         token.setTransferFee(feeBasisPoints);
         assertEq(token.transferFeeBasisPoints(), feeBasisPoints);
     }
@@ -414,7 +488,7 @@ contract CPROTokenTest is Test {
     function testSetFeeRecipient() public {
         vm.expectEmit(true, true, false, true);
         emit FeeRecipientUpdated(address(0), feeRecipient);
-        
+
         token.setFeeRecipient(feeRecipient);
         assertEq(token.feeRecipient(), feeRecipient);
     }
@@ -443,13 +517,13 @@ contract CPROTokenTest is Test {
     function testSetTransferFeeEnabled() public {
         vm.expectEmit(true, false, false, true);
         emit TransferFeeToggled(true);
-        
+
         token.setTransferFeeEnabled(true);
         assertTrue(token.transferFeeEnabled());
-        
+
         vm.expectEmit(true, false, false, true);
         emit TransferFeeToggled(false);
-        
+
         token.setTransferFeeEnabled(false);
         assertFalse(token.transferFeeEnabled());
     }
@@ -473,17 +547,14 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000; // 1% = 10 tokens
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000; // 1% = 10 tokens
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         token.transfer(user1, transferAmount);
 
         assertEq(token.balanceOf(user1), expectedTransfer);
         assertEq(token.balanceOf(feeRecipient), expectedFee);
-        assertEq(
-            token.balanceOf(owner),
-            INITIAL_SUPPLY - transferAmount
-        );
+        assertEq(token.balanceOf(owner), INITIAL_SUPPLY - transferAmount);
     }
 
     function testTransferWithFeeDisabled() public {
@@ -507,11 +578,11 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         token.approve(user1, transferAmount);
-        
+
         vm.prank(user1);
         token.transferFrom(owner, user2, transferAmount);
 
@@ -527,7 +598,7 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * maxFee) / 10000; // 5% = 50 tokens
+        uint256 expectedFee = (transferAmount * maxFee + 5000) / 10000; // 5% = 50 tokens
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         token.transfer(user1, transferAmount);
@@ -547,6 +618,26 @@ contract CPROTokenTest is Test {
 
         assertEq(token.balanceOf(user1), transferAmount);
         assertEq(token.balanceOf(feeRecipient), 0);
+    }
+
+    function testTransferWithFeeSmallAmountRoundsUp() public {
+        token.setTransferFee(100); // 1%
+        token.setFeeRecipient(feeRecipient);
+        token.setTransferFeeEnabled(true);
+
+        uint256 transferAmount = 99; // 99 wei
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000; // rounds up to 1 wei
+        uint256 expectedTransfer = transferAmount - expectedFee;
+
+        token.transfer(user1, transferAmount);
+
+        assertEq(token.balanceOf(user1), expectedTransfer);
+        assertEq(token.balanceOf(feeRecipient), expectedFee);
+        assertEq(
+            expectedFee,
+            1,
+            "small transfer should incur at least 1 wei fee with round-up"
+        );
     }
 
     // Edge Cases
@@ -618,7 +709,7 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
         uint256 initialBalance = token.balanceOf(owner);
 
@@ -635,7 +726,7 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         token.transfer(feeRecipient, transferAmount);
@@ -653,14 +744,17 @@ contract CPROTokenTest is Test {
         token.mint(feeRecipient, 1000 * 10 ** 18);
 
         uint256 transferAmount = 500 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         vm.prank(feeRecipient);
         token.transfer(user1, transferAmount);
 
         assertEq(token.balanceOf(user1), expectedTransfer);
-        assertEq(token.balanceOf(feeRecipient), 1000 * 10 ** 18 - transferAmount);
+        assertEq(
+            token.balanceOf(feeRecipient),
+            1000 * 10 ** 18 - transferAmount
+        );
     }
 
     function testTransferWithFeeNoRecipientSet() public {
@@ -669,7 +763,7 @@ contract CPROTokenTest is Test {
         // feeRecipient remains address(0)
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
         uint256 initialSupply = token.totalSupply();
 
@@ -678,7 +772,7 @@ contract CPROTokenTest is Test {
 
         assertEq(token.balanceOf(user1), expectedTransfer);
         assertEq(token.totalSupply(), initialSupply - expectedFee); // Supply decreases by fee amount
-        
+
         // Verify ERC20 invariant: totalSupply should equal sum of balances
         uint256 totalBalances = token.balanceOf(owner) + token.balanceOf(user1);
         assertEq(token.totalSupply(), totalBalances);
@@ -690,7 +784,7 @@ contract CPROTokenTest is Test {
         // feeRecipient remains address(0) - fees will be burned
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
 
         uint256 ownerVotesBefore = token.getVotes(owner);
         uint256 user1VotesBefore = token.getVotes(user1);
@@ -705,10 +799,13 @@ contract CPROTokenTest is Test {
 
         // Owner's voting power should decrease by full amount (transfer + fee)
         assertEq(ownerVotesBefore - ownerVotesAfter, transferAmount);
-        
+
         // User1's voting power should increase by transfer amount minus fee
-        assertEq(user1VotesAfter - user1VotesBefore, transferAmount - expectedFee);
-        
+        assertEq(
+            user1VotesAfter - user1VotesBefore,
+            transferAmount - expectedFee
+        );
+
         // Fee was burned, so no one's voting power should increase by the fee
         // Total voting power should decrease by the fee amount (burned)
     }
@@ -720,7 +817,7 @@ contract CPROTokenTest is Test {
         token.setTransferFeeEnabled(true);
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         uint256 ownerVotesBefore = token.getVotes(owner);
@@ -738,10 +835,10 @@ contract CPROTokenTest is Test {
 
         // Owner's voting power should decrease by full amount (transfer + fee)
         assertEq(ownerVotesBefore - ownerVotesAfter, transferAmount);
-        
+
         // User1's voting power should increase by transfer amount minus fee
         assertEq(user1VotesAfter - user1VotesBefore, expectedTransfer);
-        
+
         // Fee recipient's voting power should increase by fee
         assertEq(feeRecipientVotesAfter - feeRecipientVotesBefore, expectedFee);
     }
@@ -786,7 +883,7 @@ contract CPROTokenTest is Test {
         token.unpause();
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         token.transfer(user1, transferAmount);
@@ -808,7 +905,10 @@ contract CPROTokenTest is Test {
     }
 
     // Fuzz Tests
-    function testFuzzTransferWithFee(uint256 amount, uint256 feeBasisPoints) public {
+    function testFuzzTransferWithFee(
+        uint256 amount,
+        uint256 feeBasisPoints
+    ) public {
         feeBasisPoints = bound(feeBasisPoints, 0, token.MAX_FEE_BASIS_POINTS());
         amount = bound(amount, 1, token.balanceOf(owner) / 2); // Use at most half to avoid edge cases
 
@@ -816,7 +916,7 @@ contract CPROTokenTest is Test {
         token.setFeeRecipient(feeRecipient);
         token.setTransferFeeEnabled(true);
 
-        uint256 expectedFee = (amount * feeBasisPoints) / 10000;
+        uint256 expectedFee = (amount * feeBasisPoints + 5000) / 10000;
         uint256 expectedTransfer = amount - expectedFee;
 
         token.transfer(user1, amount);
@@ -939,7 +1039,7 @@ contract CPROTokenTest is Test {
         // No exemptions set
 
         uint256 transferAmount = 1000 * 10 ** 18;
-        uint256 expectedFee = (transferAmount * 100) / 10000;
+        uint256 expectedFee = (transferAmount * 100 + 5000) / 10000;
         uint256 expectedTransfer = transferAmount - expectedFee;
 
         // Transfer between non-exempt addresses should charge fee
@@ -952,11 +1052,11 @@ contract CPROTokenTest is Test {
     function testBatchSetFeeExemptions() public {
         address[] memory accounts = new address[](3);
         bool[] memory exempts = new bool[](3);
-        
+
         accounts[0] = dexPair;
         accounts[1] = stakingContract;
         accounts[2] = user1;
-        
+
         exempts[0] = true;
         exempts[1] = true;
         exempts[2] = false;
@@ -966,6 +1066,19 @@ contract CPROTokenTest is Test {
         assertTrue(token.isFeeExempt(dexPair));
         assertTrue(token.isFeeExempt(stakingContract));
         assertFalse(token.isFeeExempt(user1));
+    }
+
+    function testBatchSetFeeExemptionsEmitsFeeExemptionSet() public {
+        address[] memory accounts = new address[](2);
+        bool[] memory exempts = new bool[](2);
+        accounts[0] = dexPair;
+        accounts[1] = user1;
+        exempts[0] = true;
+        exempts[1] = false;
+
+        vm.expectEmit(false, false, false, true);
+        emit FeeExemptionSet(accounts, exempts);
+        token.batchSetFeeExemptions(accounts, exempts);
     }
 
     function testBatchSetFeeExemptionsOnlyOwner() public {

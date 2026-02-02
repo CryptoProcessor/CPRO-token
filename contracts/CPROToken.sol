@@ -21,7 +21,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
  *      - Capped: Maximum supply limit
  *      - Burnable: Token burning capability
  *      - Permit: Gasless approvals via EIP-2612
- * 
+ *
  * Transfer Fee Mechanism:
  * - Fees are only charged on transfers (not on minting or burning)
  * - Fees are deducted from the transfer amount
@@ -44,16 +44,17 @@ contract CPROToken is
 {
     /// @notice Maximum token supply (1 billion tokens)
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** 18;
-    
+
     /// @notice Maximum transfer fee allowed (500 basis points = 5%)
     uint256 public constant MAX_FEE_BASIS_POINTS = 500;
 
     /// @notice Transfer fee percentage in basis points (10000 = 100%, 100 = 1%)
     uint256 public transferFeeBasisPoints;
-    
+
     /// @notice Address that receives transfer fees
+    /// @dev When address(0), transfer fees are burned and total supply decreases.
     address public feeRecipient;
-    
+
     /// @notice Whether transfer fees are currently enabled
     bool public transferFeeEnabled;
 
@@ -65,9 +66,15 @@ contract CPROToken is
     event TokensBurnedByOwner(uint256 amount);
     event TokensRecovered(address indexed tokenAddress, uint256 amount);
     event TransferFeeUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
-    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event FeeRecipientUpdated(
+        address indexed oldRecipient,
+        address indexed newRecipient
+    );
     event TransferFeeToggled(bool enabled);
     event FeeExemptionUpdated(address indexed account, bool exempt);
+    /// @notice Emitted when fee exemptions are set in batch via batchSetFeeExemptions
+    /// @dev Batch path emits only this event (not FeeExemptionUpdated per account) for gas and off-chain clarity
+    event FeeExemptionSet(address[] accounts, bool[] exempts);
 
     constructor()
         ERC20("CPROToken", "CPRO")
@@ -92,7 +99,7 @@ contract CPROToken is
      * Burns a set amount of tokens by sending them to a burn address removing a set amount of tokens from supply. Effect similar to that of public trading company buying back its stock.
      * @param amount amount of tokens to burn from the owners balance
      */
-    function burnFromOwner(uint256 amount) external onlyOwner {
+    function burnFromOwner(uint256 amount) external onlyOwner whenNotPaused {
         _burn(msg.sender, amount);
         emit TokensBurnedByOwner(amount);
     }
@@ -112,26 +119,28 @@ contract CPROToken is
     function recoverERC20(
         address tokenAddress,
         uint256 tokenAmount
-    ) external onlyOwner {
+    ) external onlyOwner whenNotPaused {
         require(
             tokenAddress != address(this),
             "CPROToken: Cannot recover own tokens"
         );
         require(tokenAddress != address(0), "CPROToken: Invalid token address");
         require(tokenAmount > 0, "CPROToken: Amount must be greater than 0");
-        SafeERC20.safeTransfer(IERC20(tokenAddress), owner(), tokenAmount);
-        emit TokensRecovered(tokenAddress, tokenAmount);
+        try SafeERC20.safeTransfer(IERC20(tokenAddress), owner(), tokenAmount) {
+            emit TokensRecovered(tokenAddress, tokenAmount);
+        } catch {
+            revert("CPROToken: Token transfer failed");
+        }
     }
 
     /**
      * @notice Set the transfer fee in basis points (10000 = 100%)
      * @param basisPoints Fee percentage in basis points (max 500 = 5%)
      */
-    function setTransferFee(uint256 basisPoints) external onlyOwner {
-        require(
-            basisPoints <= MAX_FEE_BASIS_POINTS,
-            "CPROToken: Fee too high"
-        );
+    function setTransferFee(
+        uint256 basisPoints
+    ) external onlyOwner whenNotPaused {
+        require(basisPoints <= MAX_FEE_BASIS_POINTS, "CPROToken: Fee too high");
         uint256 oldFee = transferFeeBasisPoints;
         transferFeeBasisPoints = basisPoints;
         emit TransferFeeUpdated(oldFee, basisPoints);
@@ -139,9 +148,13 @@ contract CPROToken is
 
     /**
      * @notice Set the address that receives transfer fees
+     * @dev When feeRecipient is address(0) (e.g. before first set), transfer fees are burned.
+     *      This contract does not allow setting recipient to address(0).
      * @param recipient Address to receive fees
      */
-    function setFeeRecipient(address recipient) external onlyOwner {
+    function setFeeRecipient(
+        address recipient
+    ) external onlyOwner whenNotPaused {
         require(recipient != address(0), "CPROToken: Invalid recipient");
         require(
             recipient != address(this),
@@ -156,7 +169,9 @@ contract CPROToken is
      * @notice Enable or disable transfer fees
      * @param enabled True to enable fees, false to disable
      */
-    function setTransferFeeEnabled(bool enabled) external onlyOwner {
+    function setTransferFeeEnabled(
+        bool enabled
+    ) external onlyOwner whenNotPaused {
         bool oldEnabled = transferFeeEnabled;
         transferFeeEnabled = enabled;
         emit TransferFeeToggled(enabled);
@@ -166,11 +181,15 @@ contract CPROToken is
      * @notice Set fee exemption status for an address
      * @dev Used to exempt addresses from transfer fees for DeFi compatibility.
      *      Common exemptions: DEX pairs, bridges, treasury, staking contracts.
+     *      Vesting and locking contract addresses should be exempted if they move CPRO.
      *      Exemptions apply to both sender and receiver - if either is exempt, no fee is charged.
      * @param account Address to set exemption status for
      * @param exempt True to exempt from fees, false to apply fees
      */
-    function setFeeExemption(address account, bool exempt) external onlyOwner {
+    function setFeeExemption(
+        address account,
+        bool exempt
+    ) external onlyOwner whenNotPaused {
         require(account != address(0), "CPROToken: Invalid account");
         bool oldExempt = isFeeExempt[account];
         isFeeExempt[account] = exempt;
@@ -179,14 +198,16 @@ contract CPROToken is
 
     /**
      * @notice Batch set fee exemption status for multiple addresses
-     * @dev Gas-efficient way to set exemptions for multiple addresses at once
+     * @dev Gas-efficient way to set exemptions for multiple addresses at once.
+     *      Emits a single FeeExemptionSet event for off-chain tracking (batch exemption updates
+     *      do not emit FeeExemptionUpdated per account).
      * @param accounts Array of addresses to set exemption status for
      * @param exempts Array of exemption statuses (true = exempt, false = not exempt)
      */
     function batchSetFeeExemptions(
         address[] calldata accounts,
         bool[] calldata exempts
-    ) external onlyOwner {
+    ) external onlyOwner whenNotPaused {
         require(
             accounts.length == exempts.length,
             "CPROToken: Arrays length mismatch"
@@ -196,8 +217,8 @@ contract CPROToken is
         for (uint256 i = 0; i < accounts.length; i++) {
             require(accounts[i] != address(0), "CPROToken: Invalid account");
             isFeeExempt[accounts[i]] = exempts[i];
-            emit FeeExemptionUpdated(accounts[i], exempts[i]);
         }
+        emit FeeExemptionSet(accounts, exempts);
     }
 
     /**
@@ -232,8 +253,8 @@ contract CPROToken is
             !isFeeExempt[to]
         ) {
             uint256 feeBasisPoints = transferFeeBasisPoints;
-            // Calculate fee using checked arithmetic (Solidity 0.8+ prevents overflow)
-            uint256 fee = (amount * feeBasisPoints) / 10000;
+            // Fee rounded up (max +0.05% overcharge) so small transfers still incur a fee
+            uint256 fee = (amount * feeBasisPoints + 5000) / 10000;
             uint256 transferAmount = amount - fee;
 
             // Update main transfer (from → to) - updates voting power checkpoints

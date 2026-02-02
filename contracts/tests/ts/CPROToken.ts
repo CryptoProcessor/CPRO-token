@@ -69,6 +69,41 @@ describe("CPROToken", function () {
       .withArgs(owner.address, addr1.address, 1000);
   });
 
+  it("Admin functions revert when paused", async function () {
+    await token.pause();
+
+    await expect(token.burnFromOwner(1000)).to.be.revertedWithCustomError(
+      token,
+      "EnforcedPause"
+    );
+    await expect(token.setTransferFee(100)).to.be.revertedWithCustomError(
+      token,
+      "EnforcedPause"
+    );
+    await expect(
+      token.setFeeRecipient(feeRecipient.address)
+    ).to.be.revertedWithCustomError(token, "EnforcedPause");
+    await expect(
+      token.setTransferFeeEnabled(true)
+    ).to.be.revertedWithCustomError(token, "EnforcedPause");
+    await expect(
+      token.setFeeExemption(addr1.address, true)
+    ).to.be.revertedWithCustomError(token, "EnforcedPause");
+    const accounts = [addr1.address];
+    const exempts = [true];
+    await expect(
+      token.batchSetFeeExemptions(accounts, exempts)
+    ).to.be.revertedWithCustomError(token, "EnforcedPause");
+
+    const DummyERC20 = await ethers.getContractFactory("DummyERC20");
+    const dummy = await DummyERC20.deploy();
+    await dummy.waitForDeployment();
+    await dummy.mint(token.target, 1000);
+    await expect(
+      token.recoverERC20(dummy.target, 500)
+    ).to.be.revertedWithCustomError(token, "EnforcedPause");
+  });
+
   it("Owner can recover ERC20 tokens", async function () {
     const DummyERC20 = await ethers.getContractFactory("DummyERC20");
     const dummy = await DummyERC20.deploy();
@@ -103,7 +138,7 @@ describe("CPROToken", function () {
       await expect(token.setTransferFee(feeBasisPoints))
         .to.emit(token, "TransferFeeUpdated")
         .withArgs(0, feeBasisPoints);
-      
+
       expect(await token.transferFeeBasisPoints()).to.equal(feeBasisPoints);
     });
 
@@ -115,16 +150,16 @@ describe("CPROToken", function () {
 
     it("Cannot set fee above maximum", async function () {
       const maxFee = await token.MAX_FEE_BASIS_POINTS();
-      await expect(
-        token.setTransferFee(maxFee + 1n)
-      ).to.be.revertedWith("CPROToken: Fee too high");
+      await expect(token.setTransferFee(maxFee + 1n)).to.be.revertedWith(
+        "CPROToken: Fee too high"
+      );
     });
 
     it("Owner can set fee recipient", async function () {
       await expect(token.setFeeRecipient(feeRecipient.address))
         .to.emit(token, "FeeRecipientUpdated")
         .withArgs(ethers.ZeroAddress, feeRecipient.address);
-      
+
       expect(await token.feeRecipient()).to.equal(feeRecipient.address);
     });
 
@@ -135,22 +170,22 @@ describe("CPROToken", function () {
     });
 
     it("Cannot set contract address as fee recipient", async function () {
-      await expect(
-        token.setFeeRecipient(token.target)
-      ).to.be.revertedWith("CPROToken: Cannot use contract as recipient");
+      await expect(token.setFeeRecipient(token.target)).to.be.revertedWith(
+        "CPROToken: Cannot use contract as recipient"
+      );
     });
 
     it("Owner can enable/disable transfer fees", async function () {
       await expect(token.setTransferFeeEnabled(true))
         .to.emit(token, "TransferFeeToggled")
         .withArgs(true);
-      
+
       expect(await token.transferFeeEnabled()).to.be.true;
 
       await expect(token.setTransferFeeEnabled(false))
         .to.emit(token, "TransferFeeToggled")
         .withArgs(false);
-      
+
       expect(await token.transferFeeEnabled()).to.be.false;
     });
   });
@@ -164,7 +199,7 @@ describe("CPROToken", function () {
 
     it("Should deduct fee from transfer", async function () {
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
       const expectedTransfer = transferAmount - expectedFee;
 
       await token.transfer(addr1.address, transferAmount);
@@ -175,7 +210,7 @@ describe("CPROToken", function () {
 
     it("Should not charge fee when disabled", async function () {
       await token.setTransferFeeEnabled(false);
-      
+
       const transferAmount = ethers.parseUnits("1000", 18);
       await token.transfer(addr1.address, transferAmount);
 
@@ -185,17 +220,23 @@ describe("CPROToken", function () {
 
     it("Should not charge fee on minting", async function () {
       const mintAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
 
       await token.mint(addr1.address, mintAmount);
 
       expect(await token.balanceOf(addr1.address)).to.equal(mintAmount);
-      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBalanceBefore);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(
+        feeRecipientBalanceBefore
+      );
     });
 
     it("Should NOT charge fee on burning", async function () {
       const burnAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
       const totalSupplyBefore = await token.totalSupply();
 
       // Burning should be deterministic - burn exactly burnAmount
@@ -205,14 +246,18 @@ describe("CPROToken", function () {
       expect(await token.balanceOf(feeRecipient.address)).to.equal(
         feeRecipientBalanceBefore
       );
-      
+
       // Total supply should decrease by exactly burnAmount
-      expect(await token.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
+      expect(await token.totalSupply()).to.equal(
+        totalSupplyBefore - burnAmount
+      );
     });
 
     it("Should NOT charge fee on transfer to zero address", async function () {
       const burnAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
       const totalSupplyBefore = await token.totalSupply();
 
       // Transfer to address(0) should NOT charge fee (burning)
@@ -222,21 +267,37 @@ describe("CPROToken", function () {
       expect(await token.balanceOf(feeRecipient.address)).to.equal(
         feeRecipientBalanceBefore
       );
-      
+
       // Total supply should decrease by exactly burnAmount
-      expect(await token.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
+      expect(await token.totalSupply()).to.equal(
+        totalSupplyBefore - burnAmount
+      );
     });
 
     it("Should work with transferFrom", async function () {
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
       const expectedTransfer = transferAmount - expectedFee;
 
       await token.approve(addr1.address, transferAmount);
-      await token.connect(addr1).transferFrom(owner.address, addr2.address, transferAmount);
+      await token
+        .connect(addr1)
+        .transferFrom(owner.address, addr2.address, transferAmount);
 
       expect(await token.balanceOf(addr2.address)).to.equal(expectedTransfer);
       expect(await token.balanceOf(feeRecipient.address)).to.equal(expectedFee);
+    });
+
+    it("Small transfer rounds up fee", async function () {
+      const transferAmount = 99n; // 99 wei
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n; // rounds up to 1 wei
+      const expectedTransfer = transferAmount - expectedFee;
+
+      await token.transfer(addr1.address, transferAmount);
+
+      expect(await token.balanceOf(addr1.address)).to.equal(expectedTransfer);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(expectedFee);
+      expect(expectedFee).to.equal(1n);
     });
 
     it("Should work with pause/unpause", async function () {
@@ -247,7 +308,7 @@ describe("CPROToken", function () {
 
       await token.unpause();
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
       const expectedTransfer = transferAmount - expectedFee;
 
       await token.transfer(addr1.address, transferAmount);
@@ -259,7 +320,7 @@ describe("CPROToken", function () {
     it("Should burn fees when feeRecipient is not set", async function () {
       // Don't set feeRecipient - it should remain address(0)
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
       const expectedTransfer = transferAmount - expectedFee;
       const totalSupplyBefore = await token.totalSupply();
 
@@ -267,10 +328,14 @@ describe("CPROToken", function () {
       await token.transfer(addr1.address, transferAmount);
 
       expect(await token.balanceOf(addr1.address)).to.equal(expectedTransfer);
-      expect(await token.totalSupply()).to.equal(totalSupplyBefore - expectedFee); // Supply decreases by fee amount
-      
+      expect(await token.totalSupply()).to.equal(
+        totalSupplyBefore - expectedFee
+      ); // Supply decreases by fee amount
+
       // Verify ERC20 invariant: totalSupply should equal sum of balances
-      const totalBalances = (await token.balanceOf(owner.address)) + (await token.balanceOf(addr1.address));
+      const totalBalances =
+        (await token.balanceOf(owner.address)) +
+        (await token.balanceOf(addr1.address));
       expect(await token.totalSupply()).to.equal(totalBalances);
     });
   });
@@ -284,12 +349,14 @@ describe("CPROToken", function () {
 
     it("Should update voting power correctly with fees", async function () {
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
       const expectedTransfer = transferAmount - expectedFee;
 
       const ownerVotesBefore = await token.getVotes(owner.address);
       const addr1VotesBefore = await token.getVotes(addr1.address);
-      const feeRecipientVotesBefore = await token.getVotes(feeRecipient.address);
+      const feeRecipientVotesBefore = await token.getVotes(
+        feeRecipient.address
+      );
 
       await token.transfer(addr1.address, transferAmount);
 
@@ -302,7 +369,9 @@ describe("CPROToken", function () {
 
       expect(ownerVotesBefore - ownerVotesAfter).to.equal(transferAmount);
       expect(addr1VotesAfter - addr1VotesBefore).to.equal(expectedTransfer);
-      expect(feeRecipientVotesAfter - feeRecipientVotesBefore).to.equal(expectedFee);
+      expect(feeRecipientVotesAfter - feeRecipientVotesBefore).to.equal(
+        expectedFee
+      );
     });
 
     it("Should update voting power correctly when fees are burned", async function () {
@@ -312,7 +381,7 @@ describe("CPROToken", function () {
       await token.setTransferFeeEnabled(true);
 
       const transferAmount = ethers.parseUnits("1000", 18);
-      const expectedFee = (transferAmount * 100n) / 10000n;
+      const expectedFee = (transferAmount * 100n + 5000n) / 10000n;
 
       const ownerVotesBefore = await token.getVotes(owner.address);
       const addr1VotesBefore = await token.getVotes(addr1.address);
@@ -327,10 +396,12 @@ describe("CPROToken", function () {
 
       // Owner's voting power should decrease by full amount (transfer + fee)
       expect(ownerVotesBefore - ownerVotesAfter).to.equal(transferAmount);
-      
+
       // User1's voting power should increase by transfer amount minus fee
-      expect(addr1VotesAfter - addr1VotesBefore).to.equal(transferAmount - expectedFee);
-      
+      expect(addr1VotesAfter - addr1VotesBefore).to.equal(
+        transferAmount - expectedFee
+      );
+
       // Fee was burned, so no one's voting power should increase by the fee
       // Total voting power should decrease by the fee amount (burned)
     });
@@ -347,13 +418,13 @@ describe("CPROToken", function () {
       await expect(token.setFeeExemption(dexPair.address, true))
         .to.emit(token, "FeeExemptionUpdated")
         .withArgs(dexPair.address, true);
-      
+
       expect(await token.isFeeExempt(dexPair.address)).to.be.true;
 
       await expect(token.setFeeExemption(dexPair.address, false))
         .to.emit(token, "FeeExemptionUpdated")
         .withArgs(dexPair.address, false);
-      
+
       expect(await token.isFeeExempt(dexPair.address)).to.be.false;
     });
 
@@ -371,46 +442,60 @@ describe("CPROToken", function () {
 
     it("Transfer from exempt address should not charge fee", async function () {
       await token.setFeeExemption(owner.address, true);
-      
+
       const transferAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
 
       await token.transfer(addr1.address, transferAmount);
 
       expect(await token.balanceOf(addr1.address)).to.equal(transferAmount);
-      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBalanceBefore);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(
+        feeRecipientBalanceBefore
+      );
     });
 
     it("Transfer to exempt address should not charge fee", async function () {
       await token.setFeeExemption(addr1.address, true);
-      
+
       const transferAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
 
       await token.transfer(addr1.address, transferAmount);
 
       expect(await token.balanceOf(addr1.address)).to.equal(transferAmount);
-      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBalanceBefore);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(
+        feeRecipientBalanceBefore
+      );
     });
 
     it("Transfer between exempt addresses should not charge fee", async function () {
       await token.setFeeExemption(owner.address, true);
       await token.setFeeExemption(addr1.address, true);
-      
+
       const transferAmount = ethers.parseUnits("1000", 18);
-      const feeRecipientBalanceBefore = await token.balanceOf(feeRecipient.address);
+      const feeRecipientBalanceBefore = await token.balanceOf(
+        feeRecipient.address
+      );
 
       await token.transfer(addr1.address, transferAmount);
 
       expect(await token.balanceOf(addr1.address)).to.equal(transferAmount);
-      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBalanceBefore);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(
+        feeRecipientBalanceBefore
+      );
     });
 
     it("Batch set fee exemptions", async function () {
       const accounts = [dexPair.address, addr1.address];
       const exempts = [true, false];
 
-      await token.batchSetFeeExemptions(accounts, exempts);
+      await expect(token.batchSetFeeExemptions(accounts, exempts))
+        .to.emit(token, "FeeExemptionSet")
+        .withArgs(accounts, exempts);
 
       expect(await token.isFeeExempt(dexPair.address)).to.be.true;
       expect(await token.isFeeExempt(addr1.address)).to.be.false;
