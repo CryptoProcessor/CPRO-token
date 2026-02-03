@@ -126,11 +126,9 @@ contract CPROToken is
         );
         require(tokenAddress != address(0), "CPROToken: Invalid token address");
         require(tokenAmount > 0, "CPROToken: Amount must be greater than 0");
-        try SafeERC20.safeTransfer(IERC20(tokenAddress), owner(), tokenAmount) {
-            emit TokensRecovered(tokenAddress, tokenAmount);
-        } catch {
-            revert("CPROToken: Token transfer failed");
-        }
+        SafeERC20.safeTransfer(IERC20(tokenAddress), owner(), tokenAmount);
+
+        emit TokensRecovered(tokenAddress, tokenAmount);
     }
 
     /**
